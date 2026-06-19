@@ -64,7 +64,7 @@ use yii\behaviors\BlameableBehavior;
  * @property string|null $deleted_note
  */
 class PatientHos extends \yii\db\ActiveRecord {
-    const MOPH_NOTIFY_DETAIL_URL = 'http://dc.plkhealth.go.th/dmos/web/patient-hos/index?new=1';
+    const MOPH_NOTIFY_DETAIL_URL = 'http://203.157.118.4/dmos/web/patient-hos/index?new=1';
 
     /**
      * {@inheritdoc}
