@@ -2,6 +2,7 @@
 
 namespace app\models;
 
+use app\components\MyMoph;
 use Yii;
 use yii\behaviors\TimestampBehavior;
 use yii\behaviors\BlameableBehavior;
@@ -63,6 +64,7 @@ use yii\behaviors\BlameableBehavior;
  * @property string|null $deleted_note
  */
 class PatientHos extends \yii\db\ActiveRecord {
+    const MOPH_NOTIFY_DETAIL_URL = 'http://dc.plkhealth.go.th/dmos/web/patient-hos/index?new=1';
 
     /**
      * {@inheritdoc}
@@ -103,6 +105,138 @@ class PatientHos extends \yii\db\ActiveRecord {
             [['gender', 'hn', 'hoscode', 'fname', 'lname', 'date_sick', 'date_visit'], 'required'],
             [['amp', 'tmb', 'moo', 'dx', 'reporter', 'reporter_tel', 'reporter_position'], 'required']
         ];
+    }
+
+    public function afterSave($insert, $changedAttributes) {
+        parent::afterSave($insert, $changedAttributes);
+
+        if ($insert) {
+            $this->notifyMophByAmp($this->amp);
+        }
+    }
+
+    public function notifyMophByAmp($amp) {
+        try {
+            return $this->sendMophNotification($this->buildMophNotificationMessages(), $this->getMophNotifyConfig($amp));
+        } catch (\Throwable $e) {
+            Yii::warning('MOPH Notify failed: ' . $e->getMessage(), __METHOD__);
+
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    public function getMophNotifyConfig($amp = null) {
+        $config = Yii::$app->params['mophNotify'] ?? [];
+        $amp = (string) ($amp === null ? $this->amp : $amp);
+        $account = $config['accounts'][$amp] ?? null;
+
+        return array_merge([
+            'endpoint' => $config['endpoint'] ?? MyMoph::DEFAULT_ENDPOINT,
+            'clientKey' => '',
+            'secretKey' => '',
+        ], $account ?? []);
+    }
+
+    public function buildMophNotificationMessages() {
+        return [
+            MyMoph::buttonFlexMessage(
+                    'แจ้งเคสไข้เลือดออก',
+                    $this->buildMophNotificationBody(),
+                    'รายละเอียด',
+                    self::MOPH_NOTIFY_DETAIL_URL
+            ),
+        ];
+    }
+
+    public function buildMophNotificationBody() {
+        $fullName = trim((string) $this->pname . (string) $this->fname . ' ' . (string) $this->lname);
+
+        return implode("\n", [
+            'ชื่อ : ' . ($fullName === '' ? '-' : $fullName),
+            'อายุ : ' . $this->buildMophAgeText(),
+            'วันรับรักษา : ' . $this->emptyText($this->date_visit),
+            'วินิจฉัย: ' . $this->emptyText($this->getDiagnosisNameForMophNotification()),
+            'รักษาที่ : ' . $this->emptyText($this->hosname),
+            'บ้านเลขที่ : ' . $this->emptyText($this->addr),
+            'ถนน/ซอย : ' . $this->emptyText($this->street),
+            'รร/สถานที่: ' . $this->emptyText($this->place),
+            'หมู่ที่: ' . $this->emptyText($this->getMooNameForMophNotification()),
+            'ตำบล: ' . $this->emptyText($this->getTambonNameForMophNotification()),
+            'อำเภอ : ' . $this->emptyText($this->getAmphurNameForMophNotification()),
+        ]);
+    }
+
+    public function getDiagnosisNameForMophNotification() {
+        try {
+            $diagnosis = $this->getCdx()->one();
+            if ($diagnosis && !empty($diagnosis->name)) {
+                return $diagnosis->name;
+            }
+        } catch (\Throwable $e) {
+            Yii::warning('Diagnosis lookup failed for MOPH Notify: ' . $e->getMessage(), __METHOD__);
+        }
+
+        return $this->dx;
+    }
+
+    public function getTambonNameForMophNotification() {
+        try {
+            $tambon = $this->getCtmb()->one();
+            if ($tambon && !empty($tambon->name)) {
+                return $tambon->name;
+            }
+        } catch (\Throwable $e) {
+            Yii::warning('Tambon lookup failed for MOPH Notify: ' . $e->getMessage(), __METHOD__);
+        }
+
+        return $this->tmb;
+    }
+
+    public function getAmphurNameForMophNotification() {
+        try {
+            $amphur = $this->getCamp()->one();
+            if ($amphur && !empty($amphur->name)) {
+                return $amphur->name;
+            }
+        } catch (\Throwable $e) {
+            Yii::warning('Amphur lookup failed for MOPH Notify: ' . $e->getMessage(), __METHOD__);
+        }
+
+        return $this->amp;
+    }
+
+    public function getMooNameForMophNotification() {
+        try {
+            $moo = $this->getCmoo()->one();
+            if ($moo && !empty($moo->name)) {
+                $mooCode = (string) $this->moo;
+                $mooNo = strlen($mooCode) >= 8 ? substr($mooCode, 6, 2) : $mooCode;
+
+                return $mooNo . '-' . $moo->name;
+            }
+        } catch (\Throwable $e) {
+            Yii::warning('Moo lookup failed for MOPH Notify: ' . $e->getMessage(), __METHOD__);
+        }
+
+        return $this->moo;
+    }
+
+    private function buildMophAgeText() {
+        $ageY = $this->hasAttribute('age_y') ? $this->age_y : null;
+        $ageM = $this->hasAttribute('age_m') ? $this->age_m : null;
+
+        return $this->emptyText($ageY) . 'ปี ' . $this->emptyText($ageM) . ' ด';
+    }
+
+    protected function sendMophNotification($messages, $config = []) {
+        return MyMoph::send($messages, $config);
+    }
+
+    private function emptyText($value) {
+        return empty($value) ? '-' : $value;
     }
 
     /**
@@ -159,10 +293,9 @@ class PatientHos extends \yii\db\ActiveRecord {
             'accepted_reject_at' => 'วันที่ยกเลิกรับเคส',
             'accepted_reject_note' => 'เหตุผลการยกเลิกรับเคส',
             'dc' => 'สอบสวน/ควบคุม',
-            'deleted_note'=>'เหตุผล :'
+            'deleted_note' => 'เหตุผล :',
         ];
     }
-
     public function getCdx() {
         return $this->hasOne(Cdx::class, ['code' => 'dx']);
     }
